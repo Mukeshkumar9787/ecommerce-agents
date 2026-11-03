@@ -145,11 +145,24 @@ def restock_ecommerce_product(
         "poNumber": po_number or "",
     }
 
+    api_key = (
+        os.getenv("INVENTORY_AGENT_API_KEY")
+        or os.getenv("AGENT_API_KEY")
+        or os.getenv("RESTOCK_API_KEY")
+        or ""
+    )
+    headers: Dict[str, str] = {
+        "Content-Type": "application/json",
+    }
+    if api_key:
+        headers["x-api-key"] = api_key
+        headers["Authorization"] = f"Bearer {api_key}"
+
     for base in get_smk_base_urls():
         url = f"{base}/products/restock"
         try:
             with httpx.Client(timeout=5.0) as client:
-                resp = client.post(url, json=payload)
+                resp = client.post(url, json=payload, headers=headers)
                 if resp.status_code in (200, 201):
                     data = resp.json()
                     if data.get("success") and "data" in data:

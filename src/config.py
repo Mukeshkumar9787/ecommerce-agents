@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     # Inventory Agent Feature Flags
     INVENTORY_AGENT_ENABLED: bool = True
     INVENTORY_AGENT: Optional[str] = None
+    INVENTORY_AGENT_API_KEY: Optional[str] = None
 
     # PostgreSQL Checkpointing URI
     POSTGRES_URI: str = "postgresql://postgres:postgrespassword@localhost:5432/procurement_db"
