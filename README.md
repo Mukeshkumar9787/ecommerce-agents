@@ -7,50 +7,197 @@ An enterprise-grade, event-driven multi-agent procurement system packaged as a *
 ## 🏗️ Architecture & Topology
 
 ```text
-       [Kafka Topic: inventory-events]
-                     │
-                     ▼
-        ┌─────────────────────────┐
-        │ Deterministic Pre-Filter│ (Zero-token filter: current_stock <= threshold?)
-        └────────────┬────────────┘
-                     │ (Low stock event: e.g. TSHIRT-BLK-M stock 4 <= 10)
-                     ▼
-           ┌──────────────────┐
-           │ LangGraph State  │
-           │     Machine      │
-           └─────────┬────────┘
-                     │
-         ┌───────────▼───────────┐
-         │    Supervisor Node    │◄────────────────┐
-         └───────────┬───────────┘                 │
-                     │ (PENDING_ANALYSIS)          │
-                     ▼                             │
-         ┌───────────────────────┐                 │
-         │Inventory Analyst Node │─────────────────┤
-         └───────────────────────┘(ANALYSIS_COMPLETE)
-                     │                             │
-                     ▼                             │
-         ┌───────────────────────┐                 │
-         │   PO Manager Node     │─────────────────┘
-         └───────────┬───────────┘
-                     │
-         ┌───────────┴─────────────────────────────┐
-         ▼                                         ▼
-┌─────────────────┐                     ┌────────────────────┐
-│ Mock ERP REST   │                     │ Slack Interactive  │
-│  (Draft PO)     │                     │     Block Kit      │
-│  Port: 8002     │                     └─────────┬──────────┘
-└─────────────────┘                               │
-                                                  ▼ (Human Approval / Rejection)
-                                        ┌────────────────────┐
-                                        │   Slack Listener   │
-                                        │   (Socket Mode)    │
-                                        └─────────┬──────────┘
-                                                  │
-                     ┌────────────────────────────┴───────────────────────────┐
-                     ▼                                                        ▼
-         [ERP PATCH /issue]                                      [LangGraph Resume State]
-      Status updated to ISSUED                                   Status updated to APPROVED/REJECTED
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                 SMK E-COMMERCE STOREFRONT & BACKEND                              │
+│                                                                                                  │
+│   [Customer Order Placed] ──► [Stock Decrement] ──► [Kafka Producer: `inventory-events`]        │
+│                                                                   │                              │
+│   [Stock Restocked in DB] ◄── [Stock Consumer]  ◄── [Kafka Topic: `inventory-restock`]          │
+│            │                                                      ▲                              │
+│            ▼                                                      │ (produce_restock_event)      │
+│   [Customer Email Alerts]                                         │                              │
+└───────────────────────────────────────────────────────────────────┼──────────────────────────────┘
+                                    │                               │
+                      Kafka Topic: `inventory-events`               │
+                                    │                               │
+                                    ▼                               │
+┌───────────────────────────────────────────────────────────────────┴──────────────────────────────┐
+│                               AUTONOMOUS PROCUREMENT MULTI-AGENT SYSTEM                          │
+│                                                                                                  │
+│   ┌─────────────────────────┐                                                                    │
+│   │ Deterministic Pre-Filter│ (Zero-Token Filter: stock <= threshold? Draft PO already pending?) │
+│   └───────────┬─────────────┘                                                                    │
+│               │ (Passed: e.g. TSHIRT-BLK-M stock 4 <= 10)                                        │
+│               ▼                                                                                  │
+│   ┌─────────────────────────┐                                                                    │
+│   │ LangGraph State Machine │ (PostgresSaver / MemorySaver Checkpointing)                        │
+│   └───────────┬─────────────┘                                                                    │
+│               │                                                                                  │
+│       ┌───────▼───────┐                                                                          │
+│       │  Supervisor   │◄────────────────┐                                                        │
+│       └───────┬───────┘                 │                                                        │
+│               │ (PENDING_ANALYSIS)      │                                                        │
+│               ▼                         │                                                        │
+│       ┌───────────────────────┐         │                                                        │
+│       │   Inventory Analyst   │─────────┤                                                        │
+│       │ (Velocity & Cap < 20) │         │ (DRAFT_NEEDED)                                         │
+│       └───────────────────────┘         │                                                        │
+│               │                         │                                                        │
+│               ▼                         │                                                        │
+│       ┌───────────────────────┐         │                                                        │
+│       │      PO Manager       │─────────┘                                                        │
+│       └───────┬───────────────┘                                                                  │
+│               │                                                                                  │
+│       ┌───────┴─────────────────────────────────┐                                                │
+│       ▼                                         ▼                                                │
+│   ┌─────────────────┐                 ┌────────────────────┐                                     │
+│   │ Mock ERP REST   │                 │ Slack Interactive  │ (Also Command Center UI)            │
+│   │  (Draft PO)     │                 │     Block Kit      │                                     │
+│   │  Port: 8002     │                 └─────────┬──────────┘                                     │
+│   └─────────────────┘                           │ (Human Approval / Rejection)                   │
+│                                                 ▼                                                │
+│                                       ┌────────────────────┐                                     │
+│                                       │   Slack Listener   │                                     │
+│                                       │   (Socket Mode)    │                                     │
+│                                       └─────────┬──────────┘                                     │
+│                                                 │                                                │
+│               ┌─────────────────────────────────┴────────────────────────────────┐               │
+│               ▼                                                                  ▼               │
+│      [Mock ERP: PATCH /issue]                                         [LangGraph Resume State]   │
+│      - Status updated to ISSUED                                       - Status updated: APPROVED │
+│      - Dispatches Kafka `inventory-restock` event (qty < 20) ─────────┘                          │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 🔄 End-to-End Event-Driven Workflow: How Kafka Triggers & Completes the Reorder Loop
+
+The procurement lifecycle is entirely event-driven, operating across two coordinated Kafka topics:
+1. `inventory-events`: Forward trigger stream (SMK Storefront $\to$ Multi-Agent System).
+2. `inventory-restock`: Reverse replenishment stream (Multi-Agent System $\to$ SMK Storefront).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Customer as Customer
+    participant SMK as SMK Store Backend
+    participant KafkaTrig as Kafka: inventory-events
+    participant Worker as Kafka Consumer & Pre-Filter
+    participant Graph as LangGraph Multi-Agent
+    participant ERP as Mock ERP (:8002)
+    participant Slack as Slack / Web UI (HITL)
+    actor Approver as Human Approver
+    participant KafkaRestock as Kafka: inventory-restock
+    participant RestockCons as SMK Restock Consumer
+
+    Customer->>SMK: Place Order & Pay (Razorpay)
+    SMK->>SMK: Decrement Stock in DB
+    SMK->>KafkaTrig: publishInventoryEvent(slug, currentStock, threshold)
+    KafkaTrig->>Worker: Poll Message
+    Worker->>Worker: Pre-Filter: stock <= threshold? Draft PO pending?
+    Note over Worker,Graph: If healthy or pending PO: 0 tokens spent, commit offset
+    Worker->>Graph: Invoke State Machine (thread_id: reorder-{sku}-{ts})
+    Graph->>Graph: Supervisor -> Inventory Analyst (Velocity, Lead Time, Cap < 20)
+    Graph->>Graph: Supervisor -> PO Manager
+    Graph->>ERP: Create Draft PO (POST /purchase-orders)
+    Graph->>Slack: Send Interactive Approval Card
+    Note over Graph: Graph pauses at breakpoint (interrupt_after=["po_manager"])
+    Approver->>Slack: Click "Approve Reorder"
+    Slack->>ERP: Issue PO (PATCH /purchase-orders/{id}/issue)
+    Slack->>Graph: Resume Graph -> Status: APPROVED -> END
+    ERP->>KafkaRestock: produce_restock_event(slug, qty < 20, po_number)
+    KafkaRestock->>RestockCons: Ingest Restock Event
+    RestockCons->>RestockCons: Validate & Cap qty < 20
+    RestockCons->>SMK: productService.restockProduct(slug, qty, po)
+    SMK->>Customer: Send Back-in-Stock Email (if prev stock was 0)
+    Note over SMK,RestockCons: Closed-Loop Restock Complete!
+```
+
+### Detailed Lifecycle Stages
+
+#### Stage 1: Trigger — Storefront Checkout & Payment
+- When a customer purchases items on the [SMK Website](../smk), `updateOrderStatusByPaymentId` transitions the order to `PLACED`.
+- Stock is deducted in the database.
+- [`inventoryAgentProducer.js`](../smk/server/services/inventoryAgentProducer.js) emits a JSON payload to topic `inventory-events` keyed by the product SKU/slug.
+
+#### Stage 2: Ingestion & Zero-Token Pre-Filter Gate
+- [`src/workers/kafka_consumer.py`](src/workers/kafka_consumer.py) polls `inventory-events` via `confluent-kafka`.
+- **Cost-Optimization Gate**:
+  - **Healthy Inventory Check**: If `current_stock > reorder_threshold`, the event is skipped and the Kafka offset is committed immediately without invoking any LLM API calls (0 token spend).
+  - **In-Flight PO Check**: If a `DRAFT` PO is already awaiting human approval for this SKU, duplicate graph executions are prevented.
+- **Workflow Instantiation**: When stock is truly low, a unique thread ID `reorder-{sku}-{timestamp}` is generated and LangGraph is invoked.
+
+#### Stage 3: Multi-Agent Analysis & Reorder Calculation
+- **Supervisor Agent** coordinates routing and registers execution tracing.
+- **Inventory Analyst Agent**:
+  - Pulls 30-day sales velocity and daily burn rate (`src/tools/analytics.py`).
+  - Fetches supplier MOQ, unit cost, and delivery lead time (`src/tools/supplier.py`).
+  - Computes reorder quantity:
+    $$\text{Reorder Qty} = \min\Big(19,\; \max\big(\text{MOQ},\; (\text{Threshold} - \text{Stock}) + \lceil\text{Burn} \times \text{Lead}\rceil + \lceil\text{Burn} \times \text{Buffer}\rceil\big)\Big)$$
+  - *Policy Guardrail*: Automatically caps replenishment orders for store products to strictly **less than 20 units** (max 19).
+- **PO Manager Agent**:
+  - Posts a `DRAFT` Purchase Order to the ERP (`POST /api/v1/purchase-orders`).
+  - Formats and dispatches a Slack Block Kit interactive card to `#procurement-alerts` containing item specs, total cost, supplier terms, and embedded `thread_id` and `po_number` in the button payloads.
+  - Updates workflow state to `AWAITING_APPROVAL`.
+- **State Pause**: LangGraph checkpoints the state in PostgreSQL (`PostgresSaver`) and interrupts execution at `interrupt_after=["po_manager"]`.
+
+#### Stage 4: Human-in-the-Loop Approval Decision
+- A human operator reviews the draft order in Slack or on the Command Center Web UI (`http://localhost:8002`).
+- Clicking **"Approve Reorder"**:
+  - **Slack**: Handled by [`src/workers/slack_listener.py`](src/workers/slack_listener.py) via bi-directional Socket Mode (zero open firewall ports required).
+  - **Web UI**: Handled by [`src/server/app.py`](src/server/app.py) via `POST /api/v1/purchase-orders/{po_id}/issue`.
+- Resumes the paused LangGraph workflow with state `APPROVED`, logs the approver username, and terminates cleanly at `END`.
+
+#### Stage 5: Reverse Replenishment Event Emission
+- In [`src/server/erp.py`](src/server/erp.py), `issue_po_record_sync` transitions the PO status to `ISSUED`.
+- Calls [`produce_restock_event`](src/tools/ecommerce.py) which:
+  - Enforces the business policy: `quantity < 20` (capped to 19).
+  - Serializes and dispatches an event to Kafka topic `inventory-restock` (`KAFKA_TOPIC_RESTOCK_EVENTS`).
+  - Flushes the message to the Kafka broker with the product slug as partition key.
+
+#### Stage 6: Store Stock Replenishment & Cycle Completion
+- The SMK backend restock consumer ([`inventoryRestockConsumer.js`](../smk/server/services/inventoryRestockConsumer.js)) continuously listens to `inventory-restock`.
+- On receipt of the event:
+  - Validates and enforces quantity $< 20$.
+  - Executes [`productService.restockProduct(...)`](../smk/server/services/products.js) to insert a new `Stock` record (type: `PRODUCT`) into PostgreSQL.
+  - If previous stock was 0, automatically sends restock notification emails to waiting shoppers.
+  - Store stock is fully replenished in real time, closing the autonomous procurement loop.
+
+---
+
+### 📦 Kafka Event Payloads Reference
+
+#### Outbound Trigger Event: `inventory-events`
+Published by SMK Storefront when stock drops or order is placed:
+```json
+{
+  "event_id": "evt-1730635200000-abc123",
+  "timestamp": "2026-11-03T12:00:00.000Z",
+  "sku": "classic-heavyweight-cotton-t-shirt",
+  "slug": "classic-heavyweight-cotton-t-shirt",
+  "product_id": 101,
+  "product_name": "Classic Heavyweight Cotton T-Shirt",
+  "current_stock": 4,
+  "reorder_threshold": 10
+}
+```
+
+#### Inbound Replenishment Event: `inventory-restock`
+Published by Multi-Agent System upon PO approval to replenish store stock:
+```json
+{
+  "event_id": "restock-a1b2c3d4",
+  "event_type": "STOCK_RESTOCK",
+  "action": "RESTOCK",
+  "timestamp": "2026-11-03T12:05:00.000Z",
+  "slug": "classic-heavyweight-cotton-t-shirt",
+  "sku": "classic-heavyweight-cotton-t-shirt",
+  "productId": 101,
+  "quantity": 19,
+  "po_number": "PO-9142",
+  "poNumber": "PO-9142"
+}
 ```
 
 ---
