@@ -116,27 +116,11 @@ def test_po_slack_and_store_stock_quantity_parity():
         assert f"+{suggested_qty} units" in issued["audit_trail"][-1]
 
 
-def test_restock_ecommerce_product_mocked():
-    """Verify restock_ecommerce_product calls SMK backend endpoint and parses response for quantity < 20."""
-    with patch("httpx.Client") as mock_client_cls:
-        mock_client = MagicMock()
-        mock_client_cls.return_value.__enter__.return_value = mock_client
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "success": True,
-            "message": "Product stock replenished (+15 units)",
-            "data": {
-                "productId": 110,
-                "title": "Polarized Vintage Metal Frame Aviator Sunglasses",
-                "slug": "Polarized-Vintage-Metal-Frame-Aviator-Sunglasses",
-                "addedQuantity": 15,
-                "previousStock": 7,
-                "currentStock": 22,
-                "poNumber": "PO-TEST-123",
-            },
-        }
-        mock_client.post.return_value = mock_resp
+def test_produce_restock_event_dispatches_kafka_message():
+    """Verify produce_restock_event produces an event to Kafka topic inventory-restock for quantity < 20."""
+    with patch("confluent_kafka.Producer") as mock_producer_cls:
+        mock_producer = MagicMock()
+        mock_producer_cls.return_value = mock_producer
 
         res = restock_ecommerce_product(
             slug="Polarized-Vintage-Metal-Frame-Aviator-Sunglasses",
@@ -144,37 +128,28 @@ def test_restock_ecommerce_product_mocked():
             po_number="PO-TEST-123",
         )
         assert res is not None
-        assert res["currentStock"] == 22
+        assert res["success"] is True
         assert res["addedQuantity"] == 15
         assert res["addedQuantity"] < 20
+        assert res["slug"] == "Polarized-Vintage-Metal-Frame-Aviator-Sunglasses"
 
-        # Verify posted payload had quantity=15
-        posted_payload = mock_client.post.call_args[1]["json"]
-        assert posted_payload["quantity"] == 15
-        assert posted_payload["quantity"] < 20
+        mock_producer.produce.assert_called_once()
+        call_kwargs = mock_producer.produce.call_args[1]
+        assert call_kwargs["topic"] == "inventory-restock"
+        assert call_kwargs["key"] == b"Polarized-Vintage-Metal-Frame-Aviator-Sunglasses"
+        import json
+        payload = json.loads(call_kwargs["value"].decode("utf-8"))
+        assert payload["event_type"] == "STOCK_RESTOCK"
+        assert payload["quantity"] == 15
+        assert payload["po_number"] == "PO-TEST-123"
+        mock_producer.flush.assert_called_once()
 
 
-def test_restock_ecommerce_product_caps_to_less_than_20():
-    """Verify that any restock request with quantity >= 20 is capped to 19 (< 20)."""
-    with patch("httpx.Client") as mock_client_cls:
-        mock_client = MagicMock()
-        mock_client_cls.return_value.__enter__.return_value = mock_client
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "success": True,
-            "message": "Product stock replenished (+19 units)",
-            "data": {
-                "productId": 110,
-                "title": "Polarized Vintage Metal Frame Aviator Sunglasses",
-                "slug": "Polarized-Vintage-Metal-Frame-Aviator-Sunglasses",
-                "addedQuantity": 19,
-                "previousStock": 7,
-                "currentStock": 26,
-                "poNumber": "PO-TEST-CAP",
-            },
-        }
-        mock_client.post.return_value = mock_resp
+def test_produce_restock_event_caps_to_less_than_20():
+    """Verify that any restock request with quantity >= 20 is capped to 19 (< 20) in Kafka event."""
+    with patch("confluent_kafka.Producer") as mock_producer_cls:
+        mock_producer = MagicMock()
+        mock_producer_cls.return_value = mock_producer
 
         res = restock_ecommerce_product(
             slug="Polarized-Vintage-Metal-Frame-Aviator-Sunglasses",
@@ -182,39 +157,30 @@ def test_restock_ecommerce_product_caps_to_less_than_20():
             po_number="PO-TEST-CAP",
         )
         assert res is not None
-        # Verify posted payload capped quantity to 19
-        posted_payload = mock_client.post.call_args[1]["json"]
-        assert posted_payload["quantity"] == 19
-        assert posted_payload["quantity"] < 20
+        assert res["addedQuantity"] == 19
+        assert res["addedQuantity"] < 20
+
+        call_kwargs = mock_producer.produce.call_args[1]
+        import json
+        payload = json.loads(call_kwargs["value"].decode("utf-8"))
+        assert payload["quantity"] == 19
+        assert payload["quantity"] < 20
 
 
-def test_restock_ecommerce_product_sends_agent_api_key_headers():
-    """Verify restock_ecommerce_product attaches x-api-key and Authorization headers when configured."""
-    with patch("httpx.Client") as mock_client_cls, patch.dict("os.environ", {"INVENTORY_AGENT_API_KEY": "test_agent_secret_key_123"}):
-        mock_client = MagicMock()
-        mock_client_cls.return_value.__enter__.return_value = mock_client
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "success": True,
-            "message": "Product stock replenished (+5 units)",
-            "data": {
-                "productId": 110,
-                "currentStock": 15,
-                "addedQuantity": 5,
-            },
-        }
-        mock_client.post.return_value = mock_resp
+def test_produce_restock_event_with_custom_topic():
+    """Verify restock event respects KAFKA_TOPIC_RESTOCK_EVENTS override."""
+    with patch("confluent_kafka.Producer") as mock_producer_cls, patch.dict("os.environ", {"KAFKA_TOPIC_RESTOCK_EVENTS": "custom-restock-topic"}):
+        mock_producer = MagicMock()
+        mock_producer_cls.return_value = mock_producer
 
         res = restock_ecommerce_product(
-            slug="Polarized-Vintage-Metal-Frame-Aviator-Sunglasses",
+            slug="classic-heavyweight-organic-cotton-t-shirt",
             quantity=5,
-            po_number="PO-AUTH-TEST",
+            po_number="PO-CUSTOM-01",
         )
         assert res is not None
+        mock_producer.produce.assert_called_once()
+        call_kwargs = mock_producer.produce.call_args[1]
+        assert call_kwargs["topic"] == "custom-restock-topic"
 
-        # Verify posted headers contain agent API key
-        posted_headers = mock_client.post.call_args[1]["headers"]
-        assert posted_headers["x-api-key"] == "test_agent_secret_key_123"
-        assert posted_headers["Authorization"] == "Bearer test_agent_secret_key_123"
 

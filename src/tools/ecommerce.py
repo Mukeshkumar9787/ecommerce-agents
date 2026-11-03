@@ -1,8 +1,11 @@
 """E-Commerce Store client interfacing with SMK backend API in real time."""
 
+import json
 import logging
 import os
 import re
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import httpx
 from pydantic import BaseModel, Field
@@ -118,14 +121,14 @@ def get_ecommerce_product_details(slug: str) -> Dict[str, Any]:
     }
 
 
-def restock_ecommerce_product(
+def produce_restock_event(
     slug: str,
     quantity: int,
     po_number: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
-    Replenish stock for a product in SMK e-commerce backend upon PO approval.
-    POST /api/products/restock
+    Produce a Kafka replenishment event for SMK e-commerce backend upon PO approval.
+    Topic: KAFKA_TOPIC_RESTOCK_EVENTS (default 'inventory-restock')
     """
     if not slug or quantity <= 0:
         return None
@@ -139,44 +142,73 @@ def restock_ecommerce_product(
         )
         effective_quantity = 19
 
-    payload = {
-        "slug": str(slug).strip(),
+    clean_slug = str(slug).strip()
+    evt_id = f"restock-{uuid.uuid4().hex[:8]}"
+    evt_time = datetime.now(timezone.utc).isoformat()
+
+    payload: Dict[str, Any] = {
+        "event_id": evt_id,
+        "event_type": "STOCK_RESTOCK",
+        "action": "RESTOCK",
+        "timestamp": evt_time,
+        "slug": clean_slug,
+        "sku": clean_slug,
         "quantity": effective_quantity,
+        "po_number": po_number or "",
         "poNumber": po_number or "",
     }
+    if clean_slug.isdigit():
+        payload["productId"] = int(clean_slug)
 
-    api_key = (
-        os.getenv("INVENTORY_AGENT_API_KEY")
-        or os.getenv("AGENT_API_KEY")
-        or os.getenv("RESTOCK_API_KEY")
-        or ""
-    )
-    headers: Dict[str, str] = {
-        "Content-Type": "application/json",
-    }
-    if api_key:
-        headers["x-api-key"] = api_key
-        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        from src.config import get_settings
+        from src.workers.kafka_consumer import _apply_security_config
+        import confluent_kafka
 
-    for base in get_smk_base_urls():
-        url = f"{base}/products/restock"
-        try:
-            with httpx.Client(timeout=5.0) as client:
-                resp = client.post(url, json=payload, headers=headers)
-                if resp.status_code in (200, 201):
-                    data = resp.json()
-                    if data.get("success") and "data" in data:
-                        logger.info(
-                            "Successfully replenished stock (+%d) in e-commerce platform for '%s' (New stock: %s, PO: %s)",
-                            quantity,
-                            slug,
-                            data["data"].get("currentStock"),
-                            po_number,
-                        )
-                        return data["data"]
-        except Exception as exc:
-            logger.debug("Failed restocking via %s: %s", url, exc)
+        settings = get_settings()
+        topic = (
+            os.getenv("KAFKA_TOPIC_RESTOCK_EVENTS")
+            or getattr(settings, "KAFKA_TOPIC_RESTOCK_EVENTS", "inventory-restock")
+            or "inventory-restock"
+        )
+        servers = settings.KAFKA_BOOTSTRAP_SERVERS
 
-    logger.warning("Could not replenish stock for '%s' across SMK backend URLs", slug)
-    return None
+        conf = {"bootstrap.servers": servers}
+        _apply_security_config(conf, settings)
+
+        producer = confluent_kafka.Producer(conf)
+        raw_json = json.dumps(payload)
+        producer.produce(
+            topic=topic,
+            key=clean_slug.encode("utf-8"),
+            value=raw_json.encode("utf-8"),
+        )
+        producer.flush(timeout=5.0)
+
+        logger.info(
+            "🚀 Dispatched STOCK_RESTOCK event to Kafka topic='%s' for '%s' (+%d units, PO: %s)",
+            topic,
+            clean_slug,
+            effective_quantity,
+            po_number,
+        )
+        return {
+            "success": True,
+            "addedQuantity": effective_quantity,
+            "slug": clean_slug,
+            "poNumber": po_number,
+            "eventId": evt_id,
+        }
+    except Exception as exc:
+        logger.error("Failed to publish restock Kafka event for '%s': %s", clean_slug, exc)
+        return None
+
+
+def restock_ecommerce_product(
+    slug: str,
+    quantity: int,
+    po_number: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Backward-compatible wrapper dispatching stock replenishment via Kafka event."""
+    return produce_restock_event(slug=slug, quantity=quantity, po_number=po_number)
 

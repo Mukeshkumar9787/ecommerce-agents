@@ -133,6 +133,7 @@ STORE_CATALOG = {
     },
     "TSHIRT-BLK-M": {
         "name": "Apex Classic Black Cotton T-Shirt",
+        "slug": "classic-heavyweight-organic-cotton-t-shirt",
         "vendor_id": "VEND-102",
         "vendor_name": "Apex Textiles Inc.",
         "moq": 100,
@@ -289,6 +290,7 @@ def create_po_record_sync(payload: CreatePurchaseOrderRequest) -> dict:
     po_record = {
         "po_number": po_number,
         "sku": payload.sku,
+        "slug": prod_info.get("slug") or payload.sku,
         "product_name": product_name,
         "quantity": payload.quantity,
         "vendor_id": payload.vendor_id,
@@ -343,7 +345,7 @@ def issue_po_record_sync(po_id: str, approver: str) -> Optional[dict]:
     )
 
     # Replenish stock in e-commerce platform upon PO approval
-    sku_val = po.get("sku") or ""
+    sku_val = po.get("slug") or po.get("sku") or ""
     qty_val = po.get("quantity", 0)
     restock_res = None
     try:
@@ -358,22 +360,20 @@ def issue_po_record_sync(po_id: str, approver: str) -> Optional[dict]:
 
     act_restock = None
     if restock_res:
-        new_store_stock = restock_res.get("currentStock")
         added_qty = restock_res.get("addedQuantity", min(qty_val, 19) if qty_val >= 20 else qty_val)
-        po["store_stock"] = new_store_stock
         po.setdefault("audit_trail", []).append(
-            f"Stock replenished in e-commerce platform: +{added_qty} units (Current store stock: {new_store_stock})."
+            f"Kafka stock replenishment event dispatched: +{added_qty} units for store replenishment (PO: {po_id})."
         )
         act_restock = record_activity(
             agent="Inventory Restock Agent",
             event_type="STOCK_RESTOCKED",
-            title=f"Stock Restocked: +{added_qty} units",
-            description=f"Purchase order {po_id} approved. Restocked {added_qty} units for {po.get('product_name', sku_val)} in e-commerce store (Live stock: {new_store_stock}).",
+            title=f"Stock Restock Event: +{added_qty} units",
+            description=f"Purchase order {po_id} approved. Dispatched Kafka replenishment event for +{added_qty} units of {po.get('product_name', sku_val)}.",
             details={
                 "po": po_id,
                 "sku": sku_val,
                 "quantity_added": added_qty,
-                "current_stock": new_store_stock,
+                "topic": "inventory-restock",
             },
             sku=sku_val,
             po_number=po_id,

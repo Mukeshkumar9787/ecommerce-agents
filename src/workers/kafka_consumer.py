@@ -41,6 +41,11 @@ def process_inventory_event(
     Returns:
         Graph output state if triggered, or None if pre-filtered / invalid.
     """
+    # Skip restock / replenishment events directed at the store backend
+    if payload.get("event_type") == "STOCK_RESTOCK" or payload.get("action") == "RESTOCK":
+        logger.debug("Skipping STOCK_RESTOCK event in procurement consumer: %s", payload)
+        return None
+
     sku = payload.get("sku")
     current_stock = payload.get("current_stock")
     reorder_threshold = payload.get("reorder_threshold")

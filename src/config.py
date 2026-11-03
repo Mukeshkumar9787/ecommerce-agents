@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     # Kafka Messaging Settings
     KAFKA_BOOTSTRAP_SERVERS: str = "localhost:9092"
     KAFKA_TOPIC_INVENTORY_EVENTS: str = "inventory-events"
+    KAFKA_TOPIC_RESTOCK_EVENTS: str = "inventory-restock"
     KAFKA_CONSUMER_GROUP_ID: str = "procurement-agent-group"
     KAFKA_SECURITY_PROTOCOL: Optional[str] = None
     KAFKA_SASL_MECHANISM: Optional[str] = None
@@ -33,7 +34,6 @@ class Settings(BaseSettings):
     # Inventory Agent Feature Flags
     INVENTORY_AGENT_ENABLED: bool = True
     INVENTORY_AGENT: Optional[str] = None
-    INVENTORY_AGENT_API_KEY: Optional[str] = None
 
     # PostgreSQL Checkpointing URI
     POSTGRES_URI: str = "postgresql://postgres:postgrespassword@localhost:5432/procurement_db"
