@@ -116,3 +116,54 @@ def get_ecommerce_product_details(slug: str) -> Dict[str, Any]:
         "size": product.get("sizeTitle") or product.get("sizeName"),
         "color": product.get("colorCode"),
     }
+
+
+def restock_ecommerce_product(
+    slug: str,
+    quantity: int,
+    po_number: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Replenish stock for a product in SMK e-commerce backend upon PO approval.
+    POST /api/products/restock
+    """
+    if not slug or quantity <= 0:
+        return None
+
+    # Policy: Quantity of products to be added should be less than 20
+    effective_quantity = int(quantity)
+    if effective_quantity >= 20:
+        logger.info(
+            "Capping restock quantity from %d to 19 (quantity of products to be added should be less than 20)",
+            effective_quantity,
+        )
+        effective_quantity = 19
+
+    payload = {
+        "slug": str(slug).strip(),
+        "quantity": effective_quantity,
+        "poNumber": po_number or "",
+    }
+
+    for base in get_smk_base_urls():
+        url = f"{base}/products/restock"
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                resp = client.post(url, json=payload)
+                if resp.status_code in (200, 201):
+                    data = resp.json()
+                    if data.get("success") and "data" in data:
+                        logger.info(
+                            "Successfully replenished stock (+%d) in e-commerce platform for '%s' (New stock: %s, PO: %s)",
+                            quantity,
+                            slug,
+                            data["data"].get("currentStock"),
+                            po_number,
+                        )
+                        return data["data"]
+        except Exception as exc:
+            logger.debug("Failed restocking via %s: %s", url, exc)
+
+    logger.warning("Could not replenish stock for '%s' across SMK backend URLs", slug)
+    return None
+

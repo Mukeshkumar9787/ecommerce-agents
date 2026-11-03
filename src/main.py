@@ -15,6 +15,8 @@ logger = logging.getLogger("agent_orchestrator")
 
 def run_agent_server_worker():
     """Start unified Agent Real-Time Traceability & Embedded ERP server in separate process."""
+    import os
+    os.environ["IS_ERP_SERVER_PROCESS"] = "true"
     import uvicorn
     from src.config import get_settings
     settings = get_settings()
@@ -29,6 +31,8 @@ run_erp_worker = run_agent_server_worker
 
 def run_kafka_worker():
     """Start Kafka consumer worker daemon in separate process."""
+    import os
+    os.environ["IS_ERP_SERVER_PROCESS"] = "false"
     from src.workers.kafka_consumer import run_kafka_consumer
     logger.info("Starting Kafka Consumer Worker Daemon...")
     run_kafka_consumer()
@@ -36,6 +40,8 @@ def run_kafka_worker():
 
 def run_slack_worker():
     """Start Slack Socket Mode listener in separate process."""
+    import os
+    os.environ["IS_ERP_SERVER_PROCESS"] = "false"
     from src.workers.slack_listener import start_slack_socket_listener
     logger.info("Starting Slack Socket Mode Listener Daemon...")
     start_slack_socket_listener()

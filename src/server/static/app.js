@@ -83,8 +83,10 @@ function setupEventListeners() {
     });
   });
 
-  // Simulate Button
-  dom.simulateBtn.addEventListener('click', triggerSimulation);
+  // Simulate Button (if present)
+  if (dom.simulateBtn) {
+    dom.simulateBtn.addEventListener('click', triggerSimulation);
+  }
 
   // Clear Data Button
   dom.clearDataBtn.addEventListener('click', async () => {
@@ -110,8 +112,10 @@ function setupEventListeners() {
     if (e.key === 'Escape') closeModal();
   });
 
-  // Product Select Change
-  dom.productSelect.addEventListener('change', updateSelectedProductMeta);
+  // Product Select Change (if present)
+  if (dom.productSelect) {
+    dom.productSelect.addEventListener('change', updateSelectedProductMeta);
+  }
 
   // Modal Actions
   dom.modalApproveBtn.addEventListener('click', () => {
@@ -138,6 +142,7 @@ function updateSelectedProductMeta() {
 }
 
 async function fetchStoreProducts() {
+  if (!dom.productSelect) return;
   try {
     const res = await fetch('/api/v1/products');
     if (!res.ok) return;

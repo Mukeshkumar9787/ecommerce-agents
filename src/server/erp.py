@@ -7,7 +7,7 @@ import string
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
-from src.server.traceability import broadcast_event, record_activity
+from src.server.traceability import broadcast_event, record_activity, subscribers
 
 logger = logging.getLogger("agent_erp")
 
@@ -49,6 +49,7 @@ class PurchaseOrderResponse(BaseModel):
     vendor_name: Optional[str] = None
     formula_breakdown: Optional[str] = None
     audit_trail: Optional[List[str]] = None
+    store_stock: Optional[int] = None
     created_at: str
     updated_at: str
 
@@ -262,8 +263,22 @@ def send_slack_channel_message(text: str, blocks: Optional[List[dict]] = None):
         logger.warning("Failed sending Slack notification: %s", exc)
 
 
-async def create_po_record(payload: CreatePurchaseOrderRequest) -> dict:
-    """Create a draft PO in ERP datastore and emit agent traceability events."""
+def create_po_record_sync(payload: CreatePurchaseOrderRequest) -> dict:
+    """Create a draft PO synchronously in ERP datastore and emit agent traceability events."""
+    # Deduplication / Idempotency: Reuse existing DRAFT PO if one is already pending for this SKU
+    cleaned_req_sku = payload.sku.strip().upper()
+    for existing_po in purchase_orders_db.values():
+        if (
+            existing_po.get("sku", "").strip().upper() == cleaned_req_sku
+            and existing_po.get("status", "").upper() == "DRAFT"
+        ):
+            logger.info(
+                "Existing draft PO '%s' already pending for SKU '%s'. Reusing to eliminate duplicate PO generation.",
+                existing_po.get("po_number"),
+                payload.sku,
+            )
+            return existing_po
+
     now = datetime.now(timezone.utc).isoformat()
     po_number = generate_po_number()
 
@@ -299,13 +314,22 @@ async def create_po_record(payload: CreatePurchaseOrderRequest) -> dict:
         sku=payload.sku,
         po_number=po_number,
     )
-    await broadcast_event("PO_CREATED", po_record)
-    await broadcast_event("ACTIVITY", act)
+    for queue in list(subscribers):
+        try:
+            queue.put_nowait({"type": "PO_CREATED", "data": po_record})
+            queue.put_nowait({"type": "ACTIVITY", "data": act})
+        except Exception:
+            pass
     return po_record
 
 
-async def issue_po_record(po_id: str, approver: str) -> dict:
-    """Issue a purchase order in ERP datastore and announce on Slack & activity stream."""
+async def create_po_record(payload: CreatePurchaseOrderRequest) -> dict:
+    """Async wrapper for create_po_record_sync."""
+    return create_po_record_sync(payload)
+
+
+def issue_po_record_sync(po_id: str, approver: str) -> Optional[dict]:
+    """Synchronously issue a purchase order in ERP datastore and announce on Slack & activity stream."""
     if po_id not in purchase_orders_db:
         return None
 
@@ -318,6 +342,43 @@ async def issue_po_record(po_id: str, approver: str) -> dict:
         f"Approved by @{approver} at {now}. Purchase Order issued to supplier."
     )
 
+    # Replenish stock in e-commerce platform upon PO approval
+    sku_val = po.get("sku") or ""
+    qty_val = po.get("quantity", 0)
+    restock_res = None
+    try:
+        from src.tools.ecommerce import restock_ecommerce_product
+        restock_res = restock_ecommerce_product(
+            slug=sku_val,
+            quantity=qty_val,
+            po_number=po_id,
+        )
+    except Exception as exc:
+        logger.warning("Failed to replenish store stock for PO %s: %s", po_id, exc)
+
+    act_restock = None
+    if restock_res:
+        new_store_stock = restock_res.get("currentStock")
+        added_qty = restock_res.get("addedQuantity", min(qty_val, 19) if qty_val >= 20 else qty_val)
+        po["store_stock"] = new_store_stock
+        po.setdefault("audit_trail", []).append(
+            f"Stock replenished in e-commerce platform: +{added_qty} units (Current store stock: {new_store_stock})."
+        )
+        act_restock = record_activity(
+            agent="Inventory Restock Agent",
+            event_type="STOCK_RESTOCKED",
+            title=f"Stock Restocked: +{added_qty} units",
+            description=f"Purchase order {po_id} approved. Restocked {added_qty} units for {po.get('product_name', sku_val)} in e-commerce store (Live stock: {new_store_stock}).",
+            details={
+                "po": po_id,
+                "sku": sku_val,
+                "quantity_added": added_qty,
+                "current_stock": new_store_stock,
+            },
+            sku=sku_val,
+            po_number=po_id,
+        )
+
     act = record_activity(
         agent="Human Approver",
         event_type="APPROVED",
@@ -327,14 +388,31 @@ async def issue_po_record(po_id: str, approver: str) -> dict:
         sku=po.get("sku"),
         po_number=po_id,
     )
-    await broadcast_event("PO_UPDATED", po)
-    await broadcast_event("ACTIVITY", act)
+    for queue in list(subscribers):
+        try:
+            queue.put_nowait({"type": "PO_UPDATED", "data": po})
+            queue.put_nowait({"type": "ACTIVITY", "data": act})
+            if act_restock:
+                queue.put_nowait({"type": "ACTIVITY", "data": act_restock})
+        except Exception:
+            pass
 
     # Dispatch official Slack announcement card
     prod_name = po.get("product_name") or po.get("sku")
     vendor_label = po.get("vendor_name") or po.get("vendor_id")
-    qty_val = po.get("quantity", 0)
     cost_val = po.get("total_cost", 0.0)
+
+    slack_fields = [
+        {"type": "mrkdwn", "text": f"*PO Number:*\n`{po_id}`"},
+        {"type": "mrkdwn", "text": f"*Status:*\n*ISSUED*"},
+        {"type": "mrkdwn", "text": f"*Product Item:*\n*{prod_name}* (`{po.get('sku')}`)"},
+        {"type": "mrkdwn", "text": f"*Order Quantity:*\n{qty_val:,} units"},
+        {"type": "mrkdwn", "text": f"*Total Value:*\n${cost_val:,.2f}"},
+        {"type": "mrkdwn", "text": f"*Supplier:*\n{vendor_label}"},
+        {"type": "mrkdwn", "text": f"*Approved By:*\n@{approver}"},
+    ]
+    if po.get("store_stock") is not None:
+        slack_fields.append({"type": "mrkdwn", "text": f"*Store Stock:*\n{po['store_stock']:,} units"})
 
     send_slack_channel_message(
         text=f"✅ Purchase Order {po_id} APPROVED by @{approver}: {qty_val} units of '{prod_name}' (${cost_val:,.2f}) issued to {vendor_label}.",
@@ -349,23 +427,20 @@ async def issue_po_record(po_id: str, approver: str) -> dict:
             },
             {
                 "type": "section",
-                "fields": [
-                    {"type": "mrkdwn", "text": f"*PO Number:*\n`{po_id}`"},
-                    {"type": "mrkdwn", "text": f"*Status:*\n*ISSUED*"},
-                    {"type": "mrkdwn", "text": f"*Product Item:*\n*{prod_name}* (`{po.get('sku')}`)"},
-                    {"type": "mrkdwn", "text": f"*Order Quantity:*\n{qty_val:,} units"},
-                    {"type": "mrkdwn", "text": f"*Total Value:*\n${cost_val:,.2f}"},
-                    {"type": "mrkdwn", "text": f"*Supplier:*\n{vendor_label}"},
-                    {"type": "mrkdwn", "text": f"*Approved By:*\n@{approver}"},
-                ],
+                "fields": slack_fields,
             },
         ],
     )
     return po
 
 
-async def reject_po_record(po_id: str, rejector: str) -> dict:
-    """Reject a purchase order in ERP datastore and announce on Slack & activity stream."""
+async def issue_po_record(po_id: str, approver: str) -> Optional[dict]:
+    """Async wrapper for issue_po_record_sync."""
+    return issue_po_record_sync(po_id, approver)
+
+
+def reject_po_record_sync(po_id: str, rejector: str) -> Optional[dict]:
+    """Synchronously reject a purchase order in ERP datastore and announce on Slack & activity stream."""
     if po_id not in purchase_orders_db:
         return None
 
@@ -387,8 +462,12 @@ async def reject_po_record(po_id: str, rejector: str) -> dict:
         sku=po.get("sku"),
         po_number=po_id,
     )
-    await broadcast_event("PO_UPDATED", po)
-    await broadcast_event("ACTIVITY", act)
+    for queue in list(subscribers):
+        try:
+            queue.put_nowait({"type": "PO_UPDATED", "data": po})
+            queue.put_nowait({"type": "ACTIVITY", "data": act})
+        except Exception:
+            pass
 
     # Dispatch official Slack announcement card
     prod_name = po.get("product_name") or po.get("sku")
@@ -416,3 +495,8 @@ async def reject_po_record(po_id: str, rejector: str) -> dict:
         ],
     )
     return po
+
+
+async def reject_po_record(po_id: str, rejector: str) -> Optional[dict]:
+    """Async wrapper for reject_po_record_sync."""
+    return reject_po_record_sync(po_id, rejector)

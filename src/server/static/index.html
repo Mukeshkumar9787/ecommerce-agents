@@ -94,68 +94,6 @@
       </div>
     </section>
 
-    <!-- Simulation & Testing Console -->
-    <section class="control-box">
-      <div class="control-header">
-        <span class="control-title">
-          <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-          </svg>
-          Test Product Stock Drop Event
-        </span>
-        <span class="control-subtitle">
-          Simulates stock decrement when a customer buys a product in the e-commerce store
-        </span>
-      </div>
-
-      <div class="control-form">
-        <div class="field-group">
-          <label class="field-label" for="productSelect">Store Product Item</label>
-          <select id="productSelect" class="select-input">
-            <option value="classic-heavyweight-organic-cotton-t-shirt" data-name="Classic Heavyweight Organic Cotton T-Shirt" data-stock="148" data-price="29.99">
-              Classic Heavyweight Organic Cotton T-Shirt
-            </option>
-            <option value="urban-oversized-streetwear-fleece-hoodie" data-name="Urban Oversized Streetwear Fleece Hoodie" data-stock="85" data-price="69.99">
-              Urban Oversized Streetwear Fleece Hoodie
-            </option>
-            <option value="floral-print-pure-silk-wrap-summer-dress" data-name="Floral Print Pure Silk Wrap Summer Dress" data-stock="40" data-price="89.99">
-              Floral Print Pure Silk Wrap Summer Dress
-            </option>
-            <option value="pro-runner-air-cushion-sports-sneakers" data-name="Pro Runner Air Cushion Sports Sneakers" data-stock="120" data-price="119.99">
-              Pro Runner Air Cushion Sports Sneakers
-            </option>
-          </select>
-          <div id="productLiveMeta" style="font-size:0.75rem; color:var(--text-muted); margin-top:0.4rem; display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
-            <span>Slug: <strong id="metaSlug" style="font-family:var(--font-mono); color:var(--primary);">classic-heavyweight-organic-cotton-t-shirt</strong></span>
-            <span>•</span>
-            <span>Store Live Stock: <strong id="metaStock" style="color:var(--text-main);">148 units</strong></span>
-            <span>•</span>
-            <span>Store Retail: <strong id="metaPrice" style="color:var(--success);">$29.99</strong></span>
-          </div>
-        </div>
-
-        <div class="field-group">
-          <label class="field-label" for="stockInput">Current Stock</label>
-          <input type="number" id="stockInput" class="text-input" value="4" min="0">
-        </div>
-
-        <div class="field-group">
-          <label class="field-label" for="thresholdInput">Reorder Threshold</label>
-          <input type="number" id="thresholdInput" class="text-input" value="10" min="1">
-        </div>
-
-        <div>
-          <button id="simulateBtn" class="btn btn-primary">
-            <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-            </svg>
-            Simulate Stock Event
-          </button>
-        </div>
-      </div>
-    </section>
-
     <!-- Main Workspace (Purchase Orders + Real-Time Activity) -->
     <main class="main-grid">
       

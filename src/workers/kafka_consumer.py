@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 import confluent_kafka
 from src.config import get_settings
 from src.graph import create_procurement_app, get_langfuse_callback
+from src.tools.erp import list_purchase_orders, log_agent_activity
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,6 @@ def process_inventory_event(
         return None
 
     # Deterministic Pre-Filter (zero LLM token spend on healthy inventory)
-    from src.tools.erp import log_agent_activity
     if not is_stock_low(current_stock=current_stock, reorder_threshold=reorder_threshold):
         logger.info(
             "PRE-FILTER SKIPPED: SKU=%s has healthy stock (%d > threshold %d). Committing offset immediately.",
@@ -66,6 +66,33 @@ def process_inventory_event(
             sku=sku,
         )
         return None
+
+    # Deterministic Pre-Filter: Prevent duplicate POs if an active DRAFT PO is already pending for this SKU
+    try:
+        existing_pos = list_purchase_orders()
+        cleaned_sku = str(sku).strip().upper()
+        for po in existing_pos:
+            if (
+                po.get("sku", "").strip().upper() == cleaned_sku
+                and po.get("status", "").upper() == "DRAFT"
+            ):
+                po_num = po.get("po_number", "UNKNOWN")
+                logger.info(
+                    "PRE-FILTER SKIPPED: SKU=%s already has active draft PO %s awaiting approval. Skipping duplicate workflow.",
+                    sku,
+                    po_num,
+                )
+                log_agent_activity(
+                    agent="Deterministic Pre-Filter",
+                    event_type="PRE_FILTER_SKIPPED",
+                    title=f"Pre-Filter: {sku} Reorder In-Flight",
+                    description=f"Draft PO '{po_num}' is already awaiting approval. Zero LLM tokens spent. Skipping duplicate PO generation.",
+                    details={"sku": sku, "existing_po": po_num, "status": "DRAFT_PENDING"},
+                    sku=sku,
+                )
+                return po
+    except Exception as check_err:
+        logger.debug("Active PO check skipped: %s", check_err)
 
     # Stock is low -> instantiate workflow
     timestamp = int(time.time())

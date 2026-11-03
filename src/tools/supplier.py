@@ -66,9 +66,9 @@ def fetch_supplier_info(sku: str) -> SupplierInfoResult:
             data = {
                 "vendor_id": "VEND-APEX-102",
                 "vendor_name": "Apex Direct Global",
-                "moq": 30,
+                "moq": 10,
                 "unit_price": max(5.0, round(retail * 0.45, 2)),
-                "lead_time_days": 5,
+                "lead_time_days": 4,
             }
         else:
             data = {

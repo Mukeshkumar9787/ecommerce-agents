@@ -4,11 +4,15 @@ import asyncio
 import json
 import logging
 import math
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+
+# Mark current process as running the central ERP server & datastore
+os.environ["IS_ERP_SERVER_PROCESS"] = "true"
 
 from src.server.traceability import (
     ActivityLogRequest,
@@ -317,36 +321,28 @@ class SimulateEventRequest(CreatePurchaseOrderRequest.__class__):
 
 @app.post("/api/v1/simulate-event", tags=["Simulation"])
 async def simulate_inventory_event(request_data: Dict[str, Any]):
-    """Simulate real-time replenishment triggered by a store product item stock drop."""
+    """
+    Simulate real-time replenishment triggered by a store product item stock drop.
+    Executes the autonomous multi-agent workflow directly, eliminating duplicate PO generation.
+    """
     sku = request_data.get("sku", "PROD-101")
     current_stock = int(request_data.get("current_stock", 4))
     threshold = int(request_data.get("reorder_threshold", 10))
     prod_info = resolve_product_info(sku, custom_name=request_data.get("product_name"))
     product_name = prod_info["name"]
 
-    # Step 1: E-Commerce Store Event
+    # Step 1: Record E-Commerce Store Event in traceability stream
     act_store = record_activity(
         agent="E-Commerce Store",
         event_type="INVENTORY_EVENT",
         title=f"Stock Drop: {product_name}",
-        description=f"Item stock updated to {current_stock} units (safety threshold: {threshold}). Event published to Kafka.",
+        description=f"Item stock updated to {current_stock} units (safety threshold: {threshold}). Triggering replenishment workflow.",
         details={"product": product_name, "sku": sku, "stock": current_stock, "threshold": threshold},
         sku=sku,
     )
     await broadcast_event("ACTIVITY", act_store)
 
-    # Publish to Apache Kafka so consumer & Langfuse capture the trace
-    try:
-        from src.producer import produce_inventory_event
-        produce_inventory_event(
-            sku=sku,
-            current_stock=current_stock,
-            reorder_threshold=threshold,
-        )
-    except Exception as k_err:
-        logger.debug("Simulate event Kafka dispatch note: %s", k_err)
-
-    # Step 2: Deterministic Pre-Filter
+    # Step 2: Deterministic Pre-Filter check
     if current_stock > threshold:
         act_filter = record_activity(
             agent="Deterministic Pre-Filter",
@@ -359,77 +355,24 @@ async def simulate_inventory_event(request_data: Dict[str, Any]):
         await broadcast_event("ACTIVITY", act_filter)
         return {"status": "SKIPPED", "message": f"Stock is healthy ({current_stock} > {threshold})"}
 
-    act_passed = record_activity(
-        agent="Deterministic Pre-Filter",
-        event_type="PRE_FILTER_PASSED",
-        title=f"Pre-Filter Triggered: {product_name}",
-        description=f"Stock ({current_stock} <= threshold {threshold}). Spawning multi-agent replenishment workflow.",
-        details={"status": "LOW_STOCK", "stock": current_stock, "threshold": threshold},
-        sku=sku,
-    )
-    await broadcast_event("ACTIVITY", act_passed)
+    # Step 3: Trigger the unified Multi-Agent Workflow
+    from src.workers.kafka_consumer import process_inventory_event
 
-    # Step 3: Supervisor
-    act_sup = record_activity(
-        agent="Supervisor Agent",
-        event_type="STATE_ROUTED",
-        title="Supervisor: Assigned to Inventory Analyst",
-        description=f"Routing '{product_name}' to Inventory Analyst for demand forecasting and MOQ compliance.",
-        details={"next_agent": "inventory_analyst"},
-        sku=sku,
-    )
-    await broadcast_event("ACTIVITY", act_sup)
+    result = process_inventory_event({
+        "sku": sku,
+        "product_name": product_name,
+        "current_stock": current_stock,
+        "reorder_threshold": threshold,
+    })
 
-    # Step 4: Inventory Analyst Computation
-    burn = float(prod_info["burn_rate"])
-    lead = int(prod_info["lead_time"])
-    moq = int(prod_info["moq"])
-    price = float(prod_info["unit_price"])
-
-    raw_demand = (burn * lead) + (burn * 30.0) - current_stock
-    target_qty = max(moq, math.ceil(raw_demand))
-    total_cost = round(target_qty * price, 2)
-    formula_str = f"max(MOQ {moq}, ceil(({burn}/d burn * {lead}d lead) + ({burn}/d * 30d) - {current_stock} stock)) = {target_qty} units"
-
-    act_analyst = record_activity(
-        agent="Inventory Analyst",
-        event_type="ANALYSIS_COMPLETED",
-        title=f"Order Calculated: {target_qty} units",
-        description=f"Daily burn rate: {burn}/day. Lead time: {lead} days. Formula: {formula_str}",
-        details={"product": product_name, "target_qty": target_qty, "unit_price": f"${price:.2f}", "total_cost": f"${total_cost:,.2f}"},
-        sku=sku,
-    )
-    await broadcast_event("ACTIVITY", act_analyst)
-
-    # Step 5: PO Manager creates Draft PO in ERP
-    po_create_req = CreatePurchaseOrderRequest(
-        sku=sku,
-        product_name=product_name,
-        quantity=target_qty,
-        vendor_id=prod_info["vendor_id"],
-        vendor_name=prod_info["vendor_name"],
-        total_cost=total_cost,
-        formula_breakdown=formula_str,
-    )
-    created_po = await create_po_record(po_create_req)
-
-    # Step 6: Slack Approval Dispatched
-    act_slack = record_activity(
-        agent="PO Manager",
-        event_type="AWAITING_APPROVAL",
-        title=f"Approval Card Sent: {created_po['po_number']}",
-        description=f"Draft PO generated for {target_qty} units of '{product_name}'. Slack interactive approval card sent to #procurement-approvals.",
-        details={"po": created_po["po_number"], "product": product_name, "cost": f"${total_cost:,.2f}"},
-        sku=sku,
-        po_number=created_po["po_number"],
-    )
-    await broadcast_event("ACTIVITY", act_slack)
+    if not result:
+        return {"status": "SKIPPED", "message": f"Stock is healthy ({current_stock} > {threshold})"}
 
     return {
-        "status": "AWAITING_APPROVAL",
-        "po_number": created_po["po_number"],
+        "status": result.get("status", "AWAITING_APPROVAL"),
+        "po_number": result.get("po_number"),
         "product_name": product_name,
-        "quantity": target_qty,
-        "total_cost": total_cost,
-        "formula": formula_str,
+        "sku": sku,
+        "quantity": result.get("target_reorder_qty", 0),
+        "total_cost": result.get("total_estimated_cost", 0.0),
     }

@@ -80,6 +80,26 @@ class TestInventoryPreFilter:
         assert result is None
         mock_app.invoke.assert_not_called()
 
+    @patch("src.workers.kafka_consumer.list_purchase_orders")
+    def test_duplicate_draft_po_skipped_by_prefilter(self, mock_list_pos):
+        """Verify that when a DRAFT PO already exists for a SKU, duplicate PO creation is skipped."""
+        mock_list_pos.return_value = [
+            {"po_number": "PO-EXISTING-1", "sku": "TSHIRT-BLK-M", "status": "DRAFT"}
+        ]
+        mock_app = MagicMock()
+        payload = {
+            "sku": "TSHIRT-BLK-M",
+            "current_stock": 2,
+            "reorder_threshold": 10,
+        }
+
+        result = process_inventory_event(payload=payload, app=mock_app)
+
+        assert result is not None
+        assert result["po_number"] == "PO-EXISTING-1"
+        # LangGraph invoke should NOT be called because an active draft already exists
+        mock_app.invoke.assert_not_called()
+
     @patch("src.producer.confluent_kafka.Producer")
     def test_produce_inventory_event_when_enabled(self, mock_producer_cls):
         """Verify produce_inventory_event dispatches Kafka message with SKU key when enabled."""
