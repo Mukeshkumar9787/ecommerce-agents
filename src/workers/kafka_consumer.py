@@ -152,11 +152,54 @@ def process_inventory_event(
     return result
 
 
+def _apply_security_config(conf: dict, settings: Any):
+    """Apply SASL, SSL, and CA certificate configurations to librdkafka config dict."""
+    import os
+    from pathlib import Path
+
+    if settings.KAFKA_SECURITY_PROTOCOL:
+        conf["security.protocol"] = settings.KAFKA_SECURITY_PROTOCOL
+    elif settings.KAFKA_USERNAME and settings.KAFKA_PASSWORD:
+        conf["security.protocol"] = "SASL_SSL"
+    elif settings.KAFKA_CA_LOCATION or settings.KAFKA_CA_CERT:
+        conf["security.protocol"] = "SSL"
+
+    if settings.KAFKA_USERNAME and settings.KAFKA_PASSWORD:
+        conf["sasl.mechanism"] = settings.KAFKA_SASL_MECHANISM or "PLAIN"
+        conf["sasl.username"] = settings.KAFKA_USERNAME
+        conf["sasl.password"] = settings.KAFKA_PASSWORD
+
+    if settings.KAFKA_CA_LOCATION:
+        ca_path = settings.KAFKA_CA_LOCATION
+        if not os.path.isabs(ca_path):
+            base_dir = Path(__file__).resolve().parent.parent.parent
+            ca_path = str(base_dir / ca_path)
+        conf["ssl.ca.location"] = ca_path
+    elif settings.KAFKA_CA_CERT:
+        conf["ssl.ca.pem"] = settings.KAFKA_CA_CERT
+
+    if settings.KAFKA_CLIENT_CERT_LOCATION:
+        cert_path = settings.KAFKA_CLIENT_CERT_LOCATION
+        if not os.path.isabs(cert_path):
+            base_dir = Path(__file__).resolve().parent.parent.parent
+            cert_path = str(base_dir / cert_path)
+        conf["ssl.certificate.location"] = cert_path
+    if settings.KAFKA_CLIENT_KEY_LOCATION:
+        key_path = settings.KAFKA_CLIENT_KEY_LOCATION
+        if not os.path.isabs(key_path):
+            base_dir = Path(__file__).resolve().parent.parent.parent
+            key_path = str(base_dir / key_path)
+        conf["ssl.key.location"] = key_path
+
+
 def ensure_topic_exists(bootstrap_servers: str, topic: str):
     """Ensure topic exists on Kafka broker before polling."""
+    settings = get_settings()
     try:
         from confluent_kafka.admin import AdminClient, NewTopic
-        admin = AdminClient({"bootstrap.servers": bootstrap_servers})
+        admin_conf = {"bootstrap.servers": bootstrap_servers}
+        _apply_security_config(admin_conf, settings)
+        admin = AdminClient(admin_conf)
         fs = admin.create_topics([NewTopic(topic, num_partitions=1, replication_factor=1)])
         for t, f in fs.items():
             try:
@@ -180,6 +223,8 @@ def run_kafka_consumer():
         "auto.offset.reset": "earliest",
         "enable.auto.commit": False,
     }
+
+    _apply_security_config(conf, settings)
 
     consumer = confluent_kafka.Consumer(conf)
     consumer.subscribe([settings.KAFKA_TOPIC_INVENTORY_EVENTS])

@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     KAFKA_BOOTSTRAP_SERVERS: str = "localhost:9092"
     KAFKA_TOPIC_INVENTORY_EVENTS: str = "inventory-events"
     KAFKA_CONSUMER_GROUP_ID: str = "procurement-agent-group"
+    KAFKA_SECURITY_PROTOCOL: Optional[str] = None
+    KAFKA_SASL_MECHANISM: Optional[str] = None
+    KAFKA_USERNAME: Optional[str] = None
+    KAFKA_PASSWORD: Optional[str] = None
+    KAFKA_CA_LOCATION: Optional[str] = None
+    KAFKA_CA_CERT: Optional[str] = None
+    KAFKA_CLIENT_CERT_LOCATION: Optional[str] = None
+    KAFKA_CLIENT_KEY_LOCATION: Optional[str] = None
 
     # Inventory Agent Feature Flags
     INVENTORY_AGENT_ENABLED: bool = True
