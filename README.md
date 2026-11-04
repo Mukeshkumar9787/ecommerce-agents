@@ -7,12 +7,22 @@ An enterprise-grade, event-driven multi-agent procurement system packaged as a *
 
 ---
 
+## 🎬 System Demo Walkthrough
+
+<video src="https://github.com/user-attachments/assets/7f221b0a-080c-4bc7-9b40-4984b1932679" controls="controls" muted="muted" style="max-width: 100%; width: 100%; border-radius: 8px;">
+</video>
+
+> 📹 *Watch the autonomous multi-agent procurement system in action: from stock decrement and zero-token pre-filtering to LangGraph multi-agent analysis, Slack HITL approval, and automated restock dispatch.*
+
+---
+
 ## 🌐 Live Deployments & Quick Access
 
 | Service | Host / Platform | Direct URL | Description |
 | :--- | :--- | :--- | :--- |
 | **🤖 Autonomous Agent Command Center** | **Render** | [https://ecommerce-agents.onrender.com](https://ecommerce-agents.onrender.com) | Real-time multi-agent activity stream, PO approval monitor, and Mock ERP portal. |
 | **🛍️ SMK E-Commerce Storefront** | **Vercel** | [https://smk-tan.vercel.app/](https://smk-tan.vercel.app/) | Production customer storefront where checkout triggers autonomous reorder events. |
+| **🎬 Backup Drive Link** | **Google Drive** | [Watch on Drive](https://drive.google.com/file/d/1sBuaMPiN2w7JuetGcy_JzI0B29fD22mz/view?usp=sharing) | Full video backup on Google Drive. |
 
 ---
 
