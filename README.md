@@ -1,6 +1,18 @@
 # Event-Driven Autonomous Procurement Multi-Agent System
 
+[![Agents Deployment](https://img.shields.io/badge/Multi--Agent%20System-Render-46E3B7?style=for-the-badge&logo=render&logoColor=white)](https://ecommerce-agents.onrender.com)
+[![Storefront Deployment](https://img.shields.io/badge/Storefront-Vercel-black?style=for-the-badge&logo=vercel&logoColor=white)](https://smk-tan.vercel.app/)
+
 An enterprise-grade, event-driven multi-agent procurement system packaged as a **Unified Modular Worker Daemon**. Built with **Python 3.11+**, **LangGraph**, **Apache Kafka (KRaft mode)**, **PostgreSQL Checkpointing (`PostgresSaver`)**, **FastAPI Mock ERP**, and **Slack Socket Mode Human-in-the-Loop (HITL)**.
+
+---
+
+## 🌐 Live Deployments & Quick Access
+
+| Service | Host / Platform | Direct URL | Description |
+| :--- | :--- | :--- | :--- |
+| **🤖 Autonomous Agent Command Center** | **Render** | [https://ecommerce-agents.onrender.com](https://ecommerce-agents.onrender.com) | Real-time multi-agent activity stream, PO approval monitor, and Mock ERP portal. |
+| **🛍️ SMK E-Commerce Storefront** | **Vercel** | [https://smk-tan.vercel.app/](https://smk-tan.vercel.app/) | Production customer storefront where checkout triggers autonomous reorder events. |
 
 ---
 
@@ -381,7 +393,8 @@ python -m src.producer --sku TSHIRT-BLK-M --stock 50 --threshold 10
 ## 🖥️ Real-Time Multi-Agent Command Center & PO Monitor (Web UI)
 
 Open your web browser and navigate directly to:
-👉 **[http://localhost:8002](http://localhost:8002)** (or `http://localhost:8002/dashboard`)
+👉 **Production**: **[https://ecommerce-agents.onrender.com](https://ecommerce-agents.onrender.com)**  
+👉 **Local**: **[http://localhost:8002](http://localhost:8002)** (or `http://localhost:8002/dashboard`)
 
 ![Autonomous Procurement UI Dashboard](https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&w=1200&q=80)
 
@@ -413,13 +426,13 @@ Open your web browser and navigate directly to:
 Once the approval button (**"Approve Reorder"** in Slack or **"Approve"** in the Web UI) is clicked by an authorized user, you can view the finalized Purchase Order details in multiple ways:
 
 ### 1. View in the Real-Time Web Dashboard (Recommended)
-Open **[http://localhost:8002](http://localhost:8002)**:
+Open **[https://ecommerce-agents.onrender.com](https://ecommerce-agents.onrender.com)** (or locally **[http://localhost:8002](http://localhost:8002)**):
 - Filter by the **"Issued"** tab to see all approved Purchase Orders.
 - View the PO number, vendor name, quantity, total value, and the user who approved it.
 - Click **"Details"** to inspect the complete invoice specs and audit trace.
 
 ### 2. View in Mock ERP Interactive Swagger API
-Open **[http://localhost:8002/docs](http://localhost:8002/docs)**:
+Open **[https://ecommerce-agents.onrender.com/docs](https://ecommerce-agents.onrender.com/docs)** (or locally **[http://localhost:8002/docs](http://localhost:8002/docs)**):
 1. Scroll down to the **Purchase Orders** section.
 2. Click **`GET /api/v1/purchase-orders`** -> Click **"Try it out"** -> Click **"Execute"**.
 3. You will see the complete list of Purchase Orders with their updated status (`ISSUED`), the authorized approver name, and the timestamp.
@@ -427,16 +440,24 @@ Open **[http://localhost:8002/docs](http://localhost:8002/docs)**:
 
 ---
 
-### 2. View via Terminal / cURL Command
+### 3. View via Terminal / cURL Command
 You can query the Mock ERP API directly from your terminal:
 
 #### List All Purchase Orders:
 ```bash
+# Production:
+curl -s https://ecommerce-agents.onrender.com/api/v1/purchase-orders | jq .
+
+# Local:
 curl -s http://localhost:8002/api/v1/purchase-orders | jq .
 ```
 
 #### View Specific Purchase Order by ID:
 ```bash
+# Production:
+curl -s https://ecommerce-agents.onrender.com/api/v1/purchase-orders/PO-9142 | jq .
+
+# Local:
 curl -s http://localhost:8002/api/v1/purchase-orders/PO-9142 | jq .
 ```
 
