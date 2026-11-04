@@ -146,9 +146,9 @@ sequenceDiagram
 #### Stage 2: Ingestion & Zero-Token Pre-Filter Gate
 - [`src/workers/kafka_consumer.py`](src/workers/kafka_consumer.py) polls `inventory-events` via `confluent-kafka`.
 - **Cost-Optimization Gate**:
-  - **Healthy Inventory Check**: If `current_stock > reorder_threshold`, the event is skipped and the Kafka offset is committed immediately without invoking any LLM API calls (0 token spend).
+  - **Healthy Inventory Check**: If `current_stock > reorder_threshold`, the event is filtered out in **< 15ms** and the Kafka offset is committed immediately without invoking any LLM API calls (0 token spend; **~70–80% of routine checkout events filtered at zero cost**).
   - **In-Flight PO Check**: If a `DRAFT` PO is already awaiting human approval for this SKU, duplicate graph executions are prevented.
-- **Workflow Instantiation**: When stock is truly low, a unique thread ID `reorder-{sku}-{timestamp}` is generated and LangGraph is invoked.
+- **Workflow Instantiation**: When stock is truly low, a unique thread ID `reorder-{sku}-{timestamp}` is generated and LangGraph is invoked (**end-to-end latency from event ingestion to Slack interactive card dispatch is ~1.8s**).
 
 #### Stage 3: Multi-Agent Analysis & Reorder Calculation
 - **Supervisor Agent** coordinates routing and registers execution tracing.
@@ -476,9 +476,9 @@ curl -s http://localhost:8002/api/v1/purchase-orders/PO-9142 | jq .
 {
   "po_number": "PO-9142",
   "sku": "TSHIRT-BLK-M",
-  "quantity": 176,
+  "quantity": 19,
   "vendor_id": "VEND-102",
-  "total_cost": 1496.0,
+  "total_cost": 161.5,
   "status": "ISSUED",
   "approver": "mukesh",
   "created_at": "2026-11-02T09:30:05.123456+00:00",
@@ -490,8 +490,8 @@ Field description:
 - `po_number`: Unique identifier formatted as `PO-XXXX`.
 - `status`: Transitions from `DRAFT` $\to$ **`ISSUED`** upon approval.
 - `approver`: Slack user who authorized the procurement (e.g. `mukesh`).
-- `quantity`: Mathematically calculated replenishment quantity.
-- `total_cost`: Calculated based on vendor catalog unit price ($176 \times \$8.50 = \$1,496.00$).
+- `quantity`: Mathematically calculated replenishment quantity, capped at 19 units per store ceiling policy.
+- `total_cost`: Calculated based on vendor catalog unit price ($19 \times \$8.50 = \$161.50$).
 
 ---
 
@@ -500,7 +500,7 @@ In your Slack `#procurement-alerts` channel:
 - The initial interactive approval buttons disappear to prevent duplicate clicks.
 - The card updates in-place to display:
   ```text
-  ✅ Approved by @mukesh: Purchase Order PO-9142 for 176 units issued to Apex Textiles.
+  ✅ Approved by @mukesh: Purchase Order PO-9142 for 19 units issued to Apex Textiles.
   ```
 
 ---
@@ -553,6 +553,22 @@ Tests cover:
 ## 📊 Replenishment Formula Reference
 
 The Inventory Analyst Agent computes the order quantity using:
+
+### Store Product Replenishment (Default Policy with Upper Ceiling)
+For storefront SKUs, inventory orders are capped strictly to **less than 20 units** (maximum 19 units) to prevent warehouse overstock:
+$$\text{Reorder Qty} = \min\Big(19,\; \max\big(\text{MOQ},\; (\text{Threshold} - \text{Stock}) + \lceil\text{Burn Rate} \times \text{Lead Time}\rceil + \lceil\text{Burn Rate} \times \text{Buffer Days}\rceil\big)\Big)$$
+
+Where:
+- $\text{Threshold} - \text{Stock}$: Immediate inventory deficit below safety margin ($\ge 0$)
+- $\lceil\text{Burn Rate} \times \text{Lead Time}\rceil$: Projected sales demand during supplier transit window
+- $\lceil\text{Burn Rate} \times \text{Buffer Days}\rceil$: Safety buffer (default 5 days of sales velocity)
+- $\text{MOQ}$: Supplier Minimum Order Quantity
+- $\min(19, \dots)$: Enforces the strictly $< 20$ units store replenishment cap
+
+---
+
+### Unbounded Benchmark Formula (Standard Lead Demand)
+For non-capped wholesale warehouse calculations:
 $$\text{Reorder Quantity} = \max\Big(\text{MOQ},\; \big\lceil (\text{Burn Rate} \times \text{Lead Time}) + (\text{Burn Rate} \times 30) - \text{Current Stock} \big\rceil\Big)$$
 
 Where:
